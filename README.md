@@ -4,6 +4,17 @@ A beautiful, fast, cross-platform **Jellyfin client** with a cinematic,
 dark-first UI — original branding, custom widgets, and smooth animation
 throughout.
 
+## Screenshots
+
+|                        Home                        |                     Movie details                     |
+| :------------------------------------------------: | :---------------------------------------------------: |
+| ![Home — top navigation, hero banner, and Continue Watching row](screenshots/linux_home.png) | ![Movie details — cinematic backdrop, resume, and cast rail](screenshots/linux_movie_details.png) |
+
+*Home with the top navigation (Home · Movies · TV Shows · Collections ·
+Search), an auto-cycling hero banner, and the Continue Watching row —
+alongside a cinematic detail page with Resume, favorite/watched actions,
+and the cast rail. (Linux desktop.)*
+
 ## Features
 
 - **Sign in to any Jellyfin server** — per-device token via
