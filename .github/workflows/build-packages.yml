@@ -1,0 +1,232 @@
+name: Build Packages
+
+# Builds the Linux desktop packages (.deb/.rpm), the Android APK, and the
+# Windows installers (.msix + .exe).
+# - On every push/PR touching the app: builds and uploads each as artifacts.
+# - On a version tag (v*): also attaches all of them to a GitHub Release.
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+    paths:
+      - 'lib/**'
+      - 'linux/**'
+      - 'android/**'
+      - 'windows/**'
+      - 'assets/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/build-packages.yml'
+  pull_request:
+    paths:
+      - 'lib/**'
+      - 'linux/**'
+      - 'android/**'
+      - 'windows/**'
+      - 'assets/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/build-packages.yml'
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write   # required to create the GitHub Release on v* tags
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev \
+            imagemagick rpm
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Flutter pub get
+        run: |
+          flutter config --enable-linux-desktop
+          flutter pub get
+
+      - name: Build Linux release bundle
+        run: flutter build linux --release
+
+      - name: Install fpm
+        run: sudo gem install --no-document fpm
+
+      - name: Derive version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: echo "PKG_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Build .deb and .rpm
+        run: bash linux/packaging/package.sh
+
+      - name: Upload packages as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: premflix-linux-packages
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Attach packages to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  android:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write   # required to attach the APK to the Release on v* tags
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build release APK
+        # Release build signs with the debug key (android/app/build.gradle.kts),
+        # so it installs via sideload. It is NOT Play-Store-signed.
+        run: flutter build apk --release
+
+      - name: Name the APK with the version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(grep -E '^version:' pubspec.yaml | head -1 | sed -E 's/version:[[:space:]]*//; s/\+.*//')"
+          fi
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk "dist/premflix-${VERSION}.apk"
+          ls -la dist
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: premflix-android-apk
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Attach APK to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write   # required to attach the installers to the Release on v* tags
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Flutter pub get
+        run: |
+          flutter config --enable-windows-desktop
+          flutter pub get
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Derive version
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(grep -E '^version:' pubspec.yaml | head -1 | sed -E 's/version:[[:space:]]*//; s/\+.*//')"
+          fi
+          echo "PKG_VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      # Packages the built runner into an installable .msix. With no signing
+      # certificate configured in pubspec.yaml, msix signs with its bundled
+      # self-signed test certificate — users trust it once to install.
+      - name: Create MSIX installer
+        shell: bash
+        run: |
+          mkdir -p dist
+          dart run msix:create \
+            --build-windows false \
+            --install-certificate false \
+            --output-path dist \
+            --output-name "premflix-${PKG_VERSION}"
+          ls -la dist
+
+      - name: Upload MSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: premflix-windows-msix
+          path: dist/*.msix
+          if-no-files-found: error
+
+      - name: Attach MSIX to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.msix
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── .exe installer (Inno Setup) ─────────────────────────────────────────
+      # Packages the same release runner into a classic single-file installer
+      # (premflix-<version>-setup.exe). Reuses the build above — no second
+      # compile. Unsigned, so SmartScreen warns once (More info -> Run anyway).
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build .exe installer (Inno Setup)
+        shell: pwsh
+        run: |
+          & iscc /DAppVersion=$env:PKG_VERSION windows\packaging\premflix.iss
+          Get-ChildItem dist
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: premflix-windows-installer
+          path: dist/*-setup.exe
+          if-no-files-found: error
+
+      - name: Attach installer to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*-setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=PremFlix
+Comment=A beautiful, fast, cross-platform Jellyfin client
+Exec=premflix
+Icon=premflix
+Terminal=false
+Categories=AudioVideo;Video;Player;
+StartupWMClass=premflix
